@@ -9,7 +9,8 @@ class SeedAcademicData extends Command
 {
     protected $signature = 'academic:seed
         {--count=5000000 : Jumlah enrollment yang dibuat}
-        {--courses=200 : Jumlah mata kuliah}';
+        {--courses=200 : Jumlah mata kuliah}
+        {--reset : Hapus dataset lama sebelum seeding}';
 
     protected $description = 'Seed academic data for large dataset performance testing';
 
@@ -29,25 +30,41 @@ class SeedAcademicData extends Command
 
         if ($targetCount > $maxUniqueCombinations) {
             $this->error(
-                "Target {$targetCount} melebihi jumlah kombinasi unik " .
-                number_format($maxUniqueCombinations) .
+                "Target {$targetCount} melebihi jumlah kombinasi unik ".
+                number_format($maxUniqueCombinations).
                 '.'
             );
 
             return self::FAILURE;
         }
 
-        $this->warn('Menghapus dataset lama...');
+        if ($this->option('reset')) {
+            $this->warn('Menghapus dataset lama...');
 
-        DB::statement('
-            TRUNCATE TABLE
-                enrollments,
-                students,
-                courses
-            RESTART IDENTITY CASCADE
-        ');
+            DB::statement('
+                TRUNCATE TABLE
+                    enrollments,
+                    students,
+                    courses
+                RESTART IDENTITY CASCADE
+            ');
 
-        $this->info('Dataset lama berhasil dihapus.');
+            $this->info('Dataset lama berhasil dihapus.');
+        }
+
+        $existingStudents = DB::table('students')->count();
+        $existingCourses = DB::table('courses')->count();
+
+        if (($existingStudents > 0) !== ($existingCourses > 0)) {
+            $this->error(
+                'Data students dan courses tidak lengkap. Gunakan --reset.'
+            );
+
+            return self::FAILURE;
+        }
+
+        $shouldSeedBaseData = $this->option('reset')
+            || ($existingStudents === 0 && $existingCourses === 0);
 
         $now = now();
         $years = ['20', '21', '22', '23', '24', '25', '26'];
@@ -76,93 +93,109 @@ class SeedAcademicData extends Command
             'Hakim', 'Setiawan', 'Nugraha', 'Aditya', 'Mahendra',
         ];
 
-        $this->info('Membuat 35.000 mahasiswa...');
+        if ($shouldSeedBaseData) {
+            $this->info('Membuat 35.000 mahasiswa...');
 
-        $studentRows = [];
-        $batchSize = 5000;
-        $globalIndex = 1;
+            $studentRows = [];
+            $batchSize = 5000;
+            $globalIndex = 1;
 
-        foreach ($years as $year) {
-            foreach ($programCodes as $programCode) {
-                for ($sequence = 0; $sequence <= 99; $sequence++) {
-                    $sequenceFormatted = str_pad(
-                        (string) $sequence,
-                        2,
-                        '0',
-                        STR_PAD_LEFT
-                    );
+            foreach ($years as $year) {
+                foreach ($programCodes as $programCode) {
+                    for ($sequence = 0; $sequence <= 99; $sequence++) {
+                        $sequenceFormatted = str_pad(
+                            (string) $sequence,
+                            2,
+                            '0',
+                            STR_PAD_LEFT
+                        );
 
-                    $nim = $year . $programCode . $sequenceFormatted;
-                    $firstName = $firstNames[
-                        ($globalIndex - 1) % count($firstNames)
-                    ];
-                    $lastName = $lastNames[
-                        intdiv($globalIndex - 1, count($firstNames))
-                        % count($lastNames)
-                    ];
+                        $nim = $year.$programCode.$sequenceFormatted;
+                        $firstName = $firstNames[
+                            ($globalIndex - 1) % count($firstNames)
+                        ];
+                        $lastName = $lastNames[
+                            intdiv($globalIndex - 1, count($firstNames))
+                            % count($lastNames)
+                        ];
 
-                    $studentRows[] = [
-                        'nim' => $nim,
-                        'name' => $firstName . ' ' . $lastName . ' ' .
-                            str_pad((string) $globalIndex, 5, '0', STR_PAD_LEFT),
-                        'email' => strtolower(
-                            $firstName . '.' . $lastName . '.' . $nim .
-                            '@student.example.test'
-                        ),
-                        'created_at' => $now,
-                        'updated_at' => $now,
-                    ];
+                        $studentRows[] = [
+                            'nim' => $nim,
+                            'name' => $firstName.' '.$lastName.' '.
+                                str_pad((string) $globalIndex, 5, '0', STR_PAD_LEFT),
+                            'email' => strtolower(
+                                $firstName.'.'.$lastName.'.'.$nim.
+                                '@student.example.test'
+                            ),
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ];
 
-                    if (count($studentRows) >= $batchSize) {
-                        DB::table('students')->insert($studentRows);
-                        $studentRows = [];
+                        if (count($studentRows) >= $batchSize) {
+                            DB::table('students')->insert($studentRows);
+                            $studentRows = [];
+                        }
+
+                        $globalIndex++;
                     }
-
-                    $globalIndex++;
                 }
             }
+
+            if (! empty($studentRows)) {
+                DB::table('students')->insert($studentRows);
+            }
+
+            $this->info('Mahasiswa tersedia: '.number_format($studentCount));
+
+            $this->info('Membuat data mata kuliah...');
+
+            $courseRows = [];
+
+            for ($i = 1; $i <= $courseCount; $i++) {
+                $courseRows[] = [
+                    'code' => 'TS'.str_pad(
+                        (string) $i,
+                        3,
+                        '0',
+                        STR_PAD_LEFT
+                    ),
+                    'name' => 'Mata Kuliah '.$i,
+                    'credits' => (($i - 1) % 6) + 1,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+
+            DB::table('courses')->insert($courseRows);
+
+            $this->info('Mata kuliah tersedia: '.number_format($courseCount));
+        } else {
+            $this->info(
+                'Students dan courses sudah tersedia, melanjutkan data lama.'
+            );
         }
-
-        if (!empty($studentRows)) {
-            DB::table('students')->insert($studentRows);
-        }
-
-        $this->info('Mahasiswa tersedia: ' . number_format($studentCount));
-
-        $this->info('Membuat data mata kuliah...');
-
-        $courseRows = [];
-
-        for ($i = 1; $i <= $courseCount; $i++) {
-            $courseRows[] = [
-                'code' => 'TS' . str_pad(
-                    (string) $i,
-                    3,
-                    '0',
-                    STR_PAD_LEFT
-                ),
-                'name' => 'Mata Kuliah ' . $i,
-                'credits' => (($i - 1) % 6) + 1,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ];
-        }
-
-        DB::table('courses')->insert($courseRows);
-
-        $this->info('Mata kuliah tersedia: ' . number_format($courseCount));
         $this->newLine();
         $this->info('Membuat enrollment...');
 
-        $chunkSize = 100000;
-        $bar = $this->output->createProgressBar($targetCount);
-        $bar->start();
+        $chunkSize = 5000;
+        $inserted = DB::table('enrollments')->count();
 
-        for ($start = 0; $start < $targetCount; $start += $chunkSize) {
-            $end = min($start + $chunkSize - 1, $targetCount - 1);
+        $this->info("Mulai dari {$inserted} enrollment...");
 
-            DB::statement(
-                "
+        while ($inserted < $targetCount) {
+            $currentChunk = min($chunkSize, $targetCount - $inserted);
+            $start = $inserted;
+            $end = $inserted + $currentChunk - 1;
+            $maxRetries = 10;
+            $attempt = 0;
+
+            while (true) {
+                try {
+                    DB::purge('pgsql');
+                    DB::reconnect('pgsql');
+
+                    DB::statement(
+                        "
                 WITH seeded_students AS (
                     SELECT id,
                            ROW_NUMBER() OVER (ORDER BY id) - 1 AS rn
@@ -200,28 +233,48 @@ class SeedAcademicData extends Command
                     NOW()
                 FROM numbers
                 INNER JOIN seeded_students s
-                    ON s.rn = FLOOR(numbers.n / {$courseCount})
+                    ON s.rn = FLOOR(numbers.n / {$courseCount}) % {$studentCount}
                 INNER JOIN seeded_courses c
                     ON c.rn = numbers.n % {$courseCount}
                 ON CONFLICT DO NOTHING
                 "
-            );
+                    );
 
-            $bar->advance($end - $start + 1);
+                    break;
+                } catch (\Throwable $e) {
+                    $attempt++;
+
+                    $this->warn(
+                        "Database error pada {$start}-{$end}. ".
+                        "Retry {$attempt}/{$maxRetries}"
+                    );
+
+                    if ($attempt >= $maxRetries) {
+                        throw $e;
+                    }
+
+                    DB::purge('pgsql');
+                    sleep(10);
+                }
+            }
+
+            $inserted = DB::table('enrollments')->count();
+
+            $this->info("Progress: {$inserted} / {$targetCount}");
+            usleep(300000);
         }
 
-        $bar->finish();
-        $this->newLine(2);
+        $this->newLine();
 
         $totalEnrollment = DB::table('enrollments')->count();
         $this->info(
-            'Total enrollment di database: ' .
+            'Total enrollment di database: '.
             number_format($totalEnrollment)
         );
 
         if ($totalEnrollment < $targetCount) {
             $this->error(
-                'Total enrollment lebih kecil dari target. ' .
+                'Total enrollment lebih kecil dari target. '.
                 'Periksa kapasitas kombinasi student dan course.'
             );
 
@@ -230,9 +283,9 @@ class SeedAcademicData extends Command
 
         if ($totalEnrollment !== $targetCount) {
             $this->error(
-                'Total enrollment tidak sama dengan target. ' .
-                'Target: ' . number_format($targetCount) .
-                ', aktual: ' . number_format($totalEnrollment) . '.'
+                'Total enrollment tidak sama dengan target. '.
+                'Target: '.number_format($targetCount).
+                ', aktual: '.number_format($totalEnrollment).'.'
             );
 
             return self::FAILURE;
