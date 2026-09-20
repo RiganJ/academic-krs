@@ -207,7 +207,10 @@ class SeedAcademicData extends Command
                     FROM courses
                 ),
                 numbers AS (
-                    SELECT generate_series({$start}, {$end}) AS n
+                    SELECT generate_series(
+                        {$start},
+                        {$end}
+                    )::bigint AS n
                 )
                 INSERT INTO enrollments (
                     student_id,
@@ -233,7 +236,9 @@ class SeedAcademicData extends Command
                     NOW()
                 FROM numbers
                 INNER JOIN seeded_students s
-                    ON s.rn = FLOOR(numbers.n / {$courseCount}) % {$studentCount}
+                    ON s.rn = (
+                        (numbers.n / {$courseCount}) % {$studentCount}
+                    )
                 INNER JOIN seeded_courses c
                     ON c.rn = numbers.n % {$courseCount}
                 ON CONFLICT DO NOTHING
@@ -264,50 +269,50 @@ class SeedAcademicData extends Command
             usleep(300000);
         }
 
-$this->newLine();
-$this->info('Membuat enrollment...');
+        $this->newLine();
+        $this->info('Membuat enrollment...');
 
-$chunkSize = 5000;
+        $chunkSize = 5000;
 
-/*
-|--------------------------------------------------------------------------
-| Resume dari data yang sudah ada
-|--------------------------------------------------------------------------
-|
-| Kalau proses berhenti di tengah jalan, command tanpa --reset
-| akan melanjutkan dari jumlah enrollment terakhir.
-|
-*/
+        /*
+        |--------------------------------------------------------------------------
+        | Resume dari data yang sudah ada
+        |--------------------------------------------------------------------------
+        |
+        | Kalau proses berhenti di tengah jalan, command tanpa --reset
+        | akan melanjutkan dari jumlah enrollment terakhir.
+        |
+        */
 
-$inserted = (int) DB::table('enrollments')->count();
+        $inserted = (int) DB::table('enrollments')->count();
 
-$this->info(
-    'Mulai dari '.number_format($inserted).
-    ' enrollment...'
-);
+        $this->info(
+            'Mulai dari '.number_format($inserted).
+            ' enrollment...'
+        );
 
-while ($inserted < $targetCount) {
+        while ($inserted < $targetCount) {
 
-    $currentChunk = min(
-        $chunkSize,
-        $targetCount - $inserted
-    );
+            $currentChunk = min(
+                $chunkSize,
+                $targetCount - $inserted
+            );
 
-    $start = $inserted;
-    $end = $inserted + $currentChunk - 1;
+            $start = $inserted;
+            $end = $inserted + $currentChunk - 1;
 
-    $maxRetries = 10;
-    $attempt = 0;
+            $maxRetries = 10;
+            $attempt = 0;
 
-    while (true) {
-        try {
+            while (true) {
+                try {
 
-            /*
-             * Tidak perlu purge/reconnect pada setiap batch.
-             * Gunakan koneksi yang sama selama masih sehat.
-             */
+                    /*
+                     * Tidak perlu purge/reconnect pada setiap batch.
+                     * Gunakan koneksi yang sama selama masih sehat.
+                     */
 
-            DB::statement("
+                    DB::statement("
                 WITH seeded_students AS (
                     SELECT
                         id,
@@ -373,70 +378,70 @@ while ($inserted < $targetCount) {
                 ON CONFLICT DO NOTHING
             ");
 
-            break;
+                    break;
 
-        } catch (\Throwable $e) {
+                } catch (\Throwable $e) {
 
-            $attempt++;
+                    $attempt++;
 
-            $this->newLine();
+                    $this->newLine();
 
-            $this->error(
-                "Database error pada {$start}-{$end}"
-            );
+                    $this->error(
+                        "Database error pada {$start}-{$end}"
+                    );
 
-            /*
-             * INI PENTING.
-             * Supaya error SQL asli kelihatan.
-             */
-            $this->error(
-                $e->getMessage()
-            );
+                    /*
+                     * INI PENTING.
+                     * Supaya error SQL asli kelihatan.
+                     */
+                    $this->error(
+                        $e->getMessage()
+                    );
 
-            if ($attempt >= $maxRetries) {
+                    if ($attempt >= $maxRetries) {
 
-                $this->error(
-                    'Maksimal retry tercapai.'
-                );
+                        $this->error(
+                            'Maksimal retry tercapai.'
+                        );
 
-                throw $e;
+                        throw $e;
+                    }
+
+                    $this->warn(
+                        "Retry {$attempt}/{$maxRetries} ".
+                        'dalam 10 detik...'
+                    );
+
+                    /*
+                     * Baru reconnect kalau memang terjadi error.
+                     */
+                    DB::purge('pgsql');
+
+                    sleep(10);
+
+                    DB::reconnect('pgsql');
+                }
             }
 
-            $this->warn(
-                "Retry {$attempt}/{$maxRetries} ".
-                'dalam 10 detik...'
+            /*
+             * Jangan COUNT(*) seluruh tabel setiap 5.000 row.
+             *
+             * Pada 5 juta data, COUNT berulang seperti ini
+             * akan menambah beban database.
+             */
+            $inserted += $currentChunk;
+
+            $this->info(
+                'Progress: '.
+                number_format($inserted).
+                ' / '.
+                number_format($targetCount)
             );
 
             /*
-             * Baru reconnect kalau memang terjadi error.
+             * Beri sedikit waktu Supabase.
              */
-            DB::purge('pgsql');
-
-            sleep(10);
-
-            DB::reconnect('pgsql');
+            usleep(200000);
         }
-    }
-
-    /*
-     * Jangan COUNT(*) seluruh tabel setiap 5.000 row.
-     *
-     * Pada 5 juta data, COUNT berulang seperti ini
-     * akan menambah beban database.
-     */
-    $inserted += $currentChunk;
-
-    $this->info(
-        'Progress: '.
-        number_format($inserted).
-        ' / '.
-        number_format($targetCount)
-    );
-
-    /*
-     * Beri sedikit waktu Supabase.
-     */
-    usleep(200000);
-}
     }
 }
