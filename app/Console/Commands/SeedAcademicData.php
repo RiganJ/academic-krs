@@ -264,35 +264,179 @@ class SeedAcademicData extends Command
             usleep(300000);
         }
 
-        $this->newLine();
+$this->newLine();
+$this->info('Membuat enrollment...');
 
-        $totalEnrollment = DB::table('enrollments')->count();
-        $this->info(
-            'Total enrollment di database: '.
-            number_format($totalEnrollment)
-        );
+$chunkSize = 5000;
 
-        if ($totalEnrollment < $targetCount) {
+/*
+|--------------------------------------------------------------------------
+| Resume dari data yang sudah ada
+|--------------------------------------------------------------------------
+|
+| Kalau proses berhenti di tengah jalan, command tanpa --reset
+| akan melanjutkan dari jumlah enrollment terakhir.
+|
+*/
+
+$inserted = (int) DB::table('enrollments')->count();
+
+$this->info(
+    'Mulai dari '.number_format($inserted).
+    ' enrollment...'
+);
+
+while ($inserted < $targetCount) {
+
+    $currentChunk = min(
+        $chunkSize,
+        $targetCount - $inserted
+    );
+
+    $start = $inserted;
+    $end = $inserted + $currentChunk - 1;
+
+    $maxRetries = 10;
+    $attempt = 0;
+
+    while (true) {
+        try {
+
+            /*
+             * Tidak perlu purge/reconnect pada setiap batch.
+             * Gunakan koneksi yang sama selama masih sehat.
+             */
+
+            DB::statement("
+                WITH seeded_students AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (ORDER BY id) - 1 AS rn
+                    FROM students
+                ),
+                seeded_courses AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (ORDER BY id) - 1 AS rn
+                    FROM courses
+                ),
+                numbers AS (
+                    SELECT
+                        generate_series(
+                            {$start},
+                            {$end}
+                        )::bigint AS n
+                )
+
+                INSERT INTO enrollments (
+                    student_id,
+                    course_id,
+                    academic_year,
+                    semester,
+                    status,
+                    created_at,
+                    updated_at
+                )
+
+                SELECT
+                    s.id,
+                    c.id,
+                    '2026/2027',
+                    'GANJIL',
+
+                    CASE (numbers.n % 4)
+                        WHEN 0 THEN 'DRAFT'
+                        WHEN 1 THEN 'SUBMITTED'
+                        WHEN 2 THEN 'APPROVED'
+                        ELSE 'REJECTED'
+                    END,
+
+                    NOW(),
+                    NOW()
+
+                FROM numbers
+
+                INNER JOIN seeded_students s
+                    ON s.rn =
+                        (
+                            (numbers.n / {$courseCount})
+                            % {$studentCount}
+                        )
+
+                INNER JOIN seeded_courses c
+                    ON c.rn =
+                        (
+                            numbers.n
+                            % {$courseCount}
+                        )
+
+                ON CONFLICT DO NOTHING
+            ");
+
+            break;
+
+        } catch (\Throwable $e) {
+
+            $attempt++;
+
+            $this->newLine();
+
             $this->error(
-                'Total enrollment lebih kecil dari target. '.
-                'Periksa kapasitas kombinasi student dan course.'
+                "Database error pada {$start}-{$end}"
             );
 
-            return self::FAILURE;
-        }
-
-        if ($totalEnrollment !== $targetCount) {
+            /*
+             * INI PENTING.
+             * Supaya error SQL asli kelihatan.
+             */
             $this->error(
-                'Total enrollment tidak sama dengan target. '.
-                'Target: '.number_format($targetCount).
-                ', aktual: '.number_format($totalEnrollment).'.'
+                $e->getMessage()
             );
 
-            return self::FAILURE;
+            if ($attempt >= $maxRetries) {
+
+                $this->error(
+                    'Maksimal retry tercapai.'
+                );
+
+                throw $e;
+            }
+
+            $this->warn(
+                "Retry {$attempt}/{$maxRetries} ".
+                'dalam 10 detik...'
+            );
+
+            /*
+             * Baru reconnect kalau memang terjadi error.
+             */
+            DB::purge('pgsql');
+
+            sleep(10);
+
+            DB::reconnect('pgsql');
         }
+    }
 
-        $this->info('Seeder selesai tanpa error.');
+    /*
+     * Jangan COUNT(*) seluruh tabel setiap 5.000 row.
+     *
+     * Pada 5 juta data, COUNT berulang seperti ini
+     * akan menambah beban database.
+     */
+    $inserted += $currentChunk;
 
-        return self::SUCCESS;
+    $this->info(
+        'Progress: '.
+        number_format($inserted).
+        ' / '.
+        number_format($targetCount)
+    );
+
+    /*
+     * Beri sedikit waktu Supabase.
+     */
+    usleep(200000);
+}
     }
 }
